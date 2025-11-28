@@ -314,6 +314,39 @@ if st.session_state.get('analyze', False):
         # ==== 요약 정보 ====
         st.subheader("📈 현재 시장 상황")
         
+        # 상단 주요 지표 (스크린샷과 동일한 형식)
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if current_dxy:
+                st.metric(
+                    "달러 지수",
+                    f"{current_dxy:.2f}"
+                )
+            else:
+                st.metric("달러 지수", "N/A")
+        
+        with col2:
+            if gap_data and gap_data.get("mid_gap_ratio") is not None:
+                st.metric(
+                    f"{period_selection} 달러 갭",
+                    f"{gap_data['mid_gap_ratio']:.2f}%"
+                )
+            else:
+                st.metric(f"{period_selection} 달러 갭", "N/A")
+        
+        with col3:
+            if gap_data and gap_data.get("appropriate_rate") is not None:
+                st.metric(
+                    "적정 환율",
+                    f"₩{gap_data['appropriate_rate']:,.2f}"
+                )
+            else:
+                st.metric("적정 환율", "N/A")
+        
+        st.markdown("---")
+        
+        # 상세 지표
         col1, col2, col3, col4 = st.columns(4)
         
         with col1:
@@ -442,10 +475,12 @@ if st.session_state.get('analyze', False):
             with col2:
                 if gap_data.get("mid_gap_ratio") is not None:
                     gap_diff = gap_data["current_gap_ratio"] - gap_data["mid_gap_ratio"]
+                    # 갭 비율 차이를 퍼센트로 표시 (스크린샷과 동일한 형식)
+                    gap_diff_pct = (gap_diff / gap_data["mid_gap_ratio"]) * 100
                     st.metric(
                         f"{period_selection} 중간 갭 비율",
                         f"{gap_data['mid_gap_ratio']:.2f}",
-                        delta=f"{gap_diff:+.2f}",
+                        delta=f"{gap_diff_pct:+.2f}%",
                         help="현재 갭 비율이 중간 갭 비율보다 높으면 매수 유리"
                     )
         
