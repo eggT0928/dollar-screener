@@ -142,29 +142,29 @@ def get_investment_recommendation(gap_data):
     if gap_data["rate_vs_mid"] is not None:
         total_conditions += 1
         if gap_data["rate_vs_mid"] < 0:
-            recommendations.append("✅ 조건 1: 현재 원/달러 환율이 52주 중간가보다 낮음 (매수 유리)")
+            recommendations.append("✅ 조건 1: 현재 원/달러 환율이 중간가보다 낮음 (매수 유리)")
             conditions_met += 1
         else:
-            recommendations.append(f"❌ 조건 1: 현재 원/달러 환율이 52주 중간가보다 높음 ({gap_data['rate_vs_mid']:+.2f}%)")
+            recommendations.append(f"❌ 조건 1: 현재 원/달러 환율이 중간가보다 높음 ({gap_data['rate_vs_mid']:+.2f}%)")
     
     # 조건 2: 현재 DXY가 52주 중간가보다 낮을 때
     if gap_data["dxy_vs_mid"] is not None:
         total_conditions += 1
         if gap_data["dxy_vs_mid"] < 0:
-            recommendations.append("✅ 조건 2: 현재 달러 지수가 52주 중간가보다 낮음 (매수 유리)")
+            recommendations.append("✅ 조건 2: 현재 달러 지수가 중간가보다 낮음 (매수 유리)")
             conditions_met += 1
         else:
-            recommendations.append(f"❌ 조건 2: 현재 달러 지수가 52주 중간가보다 높음 ({gap_data['dxy_vs_mid']:+.2f}%)")
+            recommendations.append(f"❌ 조건 2: 현재 달러 지수가 중간가보다 높음 ({gap_data['dxy_vs_mid']:+.2f}%)")
     
     # 조건 3: 현재 달러 갭 비율이 52주 중간 갭 비율보다 높을 때
     if gap_data["current_gap_ratio"] is not None and gap_data["mid_gap_ratio"] is not None:
         total_conditions += 1
         gap_diff = gap_data["current_gap_ratio"] - gap_data["mid_gap_ratio"]
         if gap_diff > 0:
-            recommendations.append(f"✅ 조건 3: 현재 달러 갭 비율이 52주 중간 갭 비율보다 높음 (+{gap_diff:.2f}, 매수 유리)")
+            recommendations.append(f"✅ 조건 3: 현재 달러 갭 비율이 중간 갭 비율보다 높음 (+{gap_diff:.2f}, 매수 유리)")
             conditions_met += 1
         else:
-            recommendations.append(f"❌ 조건 3: 현재 달러 갭 비율이 52주 중간 갭 비율보다 낮음 ({gap_diff:.2f})")
+            recommendations.append(f"❌ 조건 3: 현재 달러 갭 비율이 중간 갭 비율보다 낮음 ({gap_diff:.2f})")
     
     # 조건 4: 현재 환율이 적정 환율보다 낮을 때
     if gap_data["appropriate_rate"] is not None and gap_data["rate_stats"]["current"] is not None:
@@ -251,13 +251,21 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("📊 분석 기간")
     
-    period_days = st.selectbox(
-        "평균 계산 기간",
-        options=[126, 252, 504],
-        index=1,
-        format_func=lambda x: f"{x}일 ({x//21}개월)",
-        help="평균 환율 계산에 사용할 기간을 선택하세요."
+    period_options = {
+        "1개월": 21,
+        "3개월": 63,
+        "6개월": 126,
+        "1년": 252
+    }
+    
+    period_selection = st.selectbox(
+        "분석 기간 선택",
+        options=list(period_options.keys()),
+        index=3,  # 기본값: 1년
+        help="중간가 및 갭 비율 계산에 사용할 기간을 선택하세요."
     )
+    
+    period_days = period_options[period_selection]
     
     st.markdown("---")
     
@@ -268,6 +276,7 @@ with st.sidebar:
             st.session_state['analyze'] = True
             st.session_state['investment_amount'] = investment_amount
             st.session_state['period_days'] = period_days
+            st.session_state['period_selection'] = period_selection
     
     if st.button("🔄 초기화", use_container_width=True):
         if 'analyze' in st.session_state:
@@ -278,6 +287,7 @@ with st.sidebar:
 if st.session_state.get('analyze', False):
     investment_amount = st.session_state.get('investment_amount', 0)
     period_days = st.session_state.get('period_days', 252)
+    period_selection = st.session_state.get('period_selection', '1년')
     
     # 데이터 조회
     with st.spinner("환율 및 달러 인덱스 데이터를 조회하는 중..."):
@@ -351,7 +361,7 @@ if st.session_state.get('analyze', False):
                     f"₩{gap_data['appropriate_rate']:,.2f}",
                     delta=f"{rate_diff_pct:+.2f}%",
                     delta_color="inverse" if rate_diff < 0 else "normal",
-                    help="현재 달러 지수 / 52주 중간 달러 갭 비율 * 100"
+                    help=f"현재 달러 지수 / {period_selection} 중간 달러 갭 비율 * 100"
                 )
             else:
                 st.metric("적정 환율", "N/A")
@@ -394,33 +404,33 @@ if st.session_state.get('analyze', False):
         
         # ==== 환율 통계 ====
         if gap_data and gap_data.get("rate_stats"):
-            st.subheader("📊 환율 통계 (52주)")
+            st.subheader(f"📊 환율 통계 ({period_selection})")
             col1, col2, col3, col4 = st.columns(4)
             rate_stats = gap_data["rate_stats"]
             
             with col1:
                 st.metric("현재 환율", f"₩{rate_stats['current']:,.2f}")
             with col2:
-                st.metric("52주 중간가", f"₩{rate_stats['mid']:,.2f}")
+                st.metric(f"{period_selection} 중간가", f"₩{rate_stats['mid']:,.2f}")
             with col3:
-                st.metric("52주 최저", f"₩{rate_stats['min']:,.2f}")
+                st.metric(f"{period_selection} 최저", f"₩{rate_stats['min']:,.2f}")
             with col4:
-                st.metric("52주 최고", f"₩{rate_stats['max']:,.2f}")
+                st.metric(f"{period_selection} 최고", f"₩{rate_stats['max']:,.2f}")
         
         # ==== DXY 통계 ====
         if gap_data and gap_data.get("dxy_stats") and gap_data["dxy_stats"]:
-            st.subheader("📊 달러 인덱스 (DXY) 통계 (52주)")
+            st.subheader(f"📊 달러 인덱스 (DXY) 통계 ({period_selection})")
             col1, col2, col3, col4 = st.columns(4)
             dxy_stats = gap_data["dxy_stats"]
             
             with col1:
                 st.metric("현재 DXY", f"{dxy_stats['current']:.2f}" if dxy_stats['current'] else "N/A")
             with col2:
-                st.metric("52주 중간가", f"{dxy_stats['mid']:.2f}" if dxy_stats['mid'] else "N/A")
+                st.metric(f"{period_selection} 중간가", f"{dxy_stats['mid']:.2f}" if dxy_stats['mid'] else "N/A")
             with col3:
-                st.metric("52주 최저", f"{dxy_stats['min']:.2f}" if dxy_stats['min'] else "N/A")
+                st.metric(f"{period_selection} 최저", f"{dxy_stats['min']:.2f}" if dxy_stats['min'] else "N/A")
             with col4:
-                st.metric("52주 최고", f"{dxy_stats['max']:.2f}" if dxy_stats['max'] else "N/A")
+                st.metric(f"{period_selection} 최고", f"{dxy_stats['max']:.2f}" if dxy_stats['max'] else "N/A")
         
         # ==== 달러 갭 비율 상세 ====
         if gap_data and gap_data.get("current_gap_ratio") is not None:
@@ -433,7 +443,7 @@ if st.session_state.get('analyze', False):
                 if gap_data.get("mid_gap_ratio") is not None:
                     gap_diff = gap_data["current_gap_ratio"] - gap_data["mid_gap_ratio"]
                     st.metric(
-                        "52주 중간 갭 비율",
+                        f"{period_selection} 중간 갭 비율",
                         f"{gap_data['mid_gap_ratio']:.2f}",
                         delta=f"{gap_diff:+.2f}",
                         help="현재 갭 비율이 중간 갭 비율보다 높으면 매수 유리"
@@ -549,8 +559,8 @@ if st.session_state.get('analyze', False):
             st.markdown("---")
             summary_data = {
                 "항목": [
-                    "현재 환율", "52주 중간가 대비 (%)", "현재 DXY", "52주 중간가 대비 (%)",
-                    "현재 달러 갭 비율", "52주 중간 갭 비율", "적정 환율",
+                    "현재 환율", "중간가 대비 (%)", "현재 DXY", "중간가 대비 (%)",
+                    "현재 달러 갭 비율", "중간 갭 비율", "적정 환율",
                     "투자 금액 (원)", "구매 가능 달러 ($)",
                     "투자 판단", "만족 조건 수"
                 ],
