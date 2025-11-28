@@ -73,15 +73,17 @@ def calculate_dollar_gap_ratio(current_rate, rate_hist, current_dxy, dxy_hist, p
     mid_gap_ratio = None
     appropriate_rate = None
     
+    # 52주 중간 달러 갭 비율 = 52주 중간 DXY / 52주 중간 환율 * 100
+    # (현재 값과 관계없이 항상 계산 가능)
+    if dxy_mid and rate_mid > 0:
+        mid_gap_ratio = (dxy_mid / rate_mid) * 100
+    
+    # 현재 달러 갭 비율 = 현재 DXY / 현재 환율 * 100
     if current_dxy and current_rate > 0:
-        # 현재 달러 갭 비율 = 현재 DXY / 현재 환율 * 100
         current_gap_ratio = (current_dxy / current_rate) * 100
         
-        # 52주 중간 달러 갭 비율 = 52주 중간 DXY / 52주 중간 환율 * 100
-        if dxy_mid:
-            mid_gap_ratio = (dxy_mid / rate_mid) * 100
-            
-            # 적정 환율 = 현재 DXY / 52주 중간 달러 갭 비율 * 100
+        # 적정 환율 = 현재 DXY / 52주 중간 달러 갭 비율 * 100
+        if mid_gap_ratio:
             appropriate_rate = (current_dxy / mid_gap_ratio) * 100
     
     return {
