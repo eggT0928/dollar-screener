@@ -19,6 +19,7 @@ def get_market_data(ticker_symbol: str, period: str = "2y"):
             return None, None, None
 
         hist = hist.dropna(subset=["Close"])
+
         if hist.empty:
             return None, None, None
 
@@ -44,17 +45,83 @@ def format_data_date(date_value):
 
 
 # =========================================================
-# 2. 환전 비용률 가이드 함수
+# 2. 달러리치 방식 계산 보조 함수
+# =========================================================
+
+def get_recent_window_by_calendar_days(hist, calendar_days: int):
+    """
+    최근 N일을 달력일 기준으로 자른다.
+    예: 1년 = 최근 365일
+
+    달러리치 앱의 52주 방식에 가깝게 맞추기 위해
+    252거래일이 아니라 365달력일 기준으로 기간을 잡는다.
+    """
+    if hist is None or hist.empty:
+        return None
+
+    data = hist.copy()
+
+    if getattr(data.index, "tz", None) is not None:
+        data.index = data.index.tz_localize(None)
+
+    end_date = data.index.max()
+    start_date = end_date - pd.Timedelta(days=calendar_days)
+
+    recent = data.loc[data.index >= start_date].copy()
+
+    if recent.empty:
+        return None
+
+    return recent
+
+
+def calculate_mid_price_by_high_low(hist, calendar_days: int):
+    """
+    달러리치 방식에 가깝게 기간 내 최저값과 최고값의 중간값을 계산한다.
+
+    우선순위:
+    1. High / Low 컬럼이 있으면 기간 내 High 최고값, Low 최저값 사용
+    2. 없으면 Close 기준 최저값, 최고값으로 대체
+    """
+    recent = get_recent_window_by_calendar_days(hist, calendar_days)
+
+    if recent is None or recent.empty:
+        return None
+
+    if "High" in recent.columns and "Low" in recent.columns:
+        low_value = float(recent["Low"].dropna().min())
+        high_value = float(recent["High"].dropna().max())
+    else:
+        close = recent["Close"].dropna()
+
+        if close.empty:
+            return None
+
+        low_value = float(close.min())
+        high_value = float(close.max())
+
+    mid_value = (low_value + high_value) / 2
+
+    return {
+        "min": low_value,
+        "max": high_value,
+        "mid": mid_value,
+        "recent": recent,
+    }
+
+
+# =========================================================
+# 3. 환전 비용률 가이드 함수
 # =========================================================
 
 def calculate_effective_fee_rate(base_spread_percent, preferential_discount_percent):
     """
     예상 환전 비용률을 계산한다.
 
-    예시:
-    - 기본 스프레드 1.50%
-    - 환율우대 90%
-    - 실제 부담 비용률 = 1.50% × (1 - 90%) = 0.15%
+    예:
+    - 우대 전 스프레드 1.50%
+    - 환율우대율 90%
+    - 예상 비용률 = 1.50% * (1 - 90%) = 0.15%
     """
     effective_fee_rate = base_spread_percent * (1 - preferential_discount_percent / 100)
     return max(effective_fee_rate, 0)
@@ -67,27 +134,27 @@ def get_fee_preset_info(preset_name):
         "하나은행 환전지갑 USD 90% 우대 가정": {
             "base_spread": 1.50,
             "discount": 90.0,
-            "description": "하나은행 USD 외화현찰 수수료 1.5%, 환전지갑 최대 90% 환율우대 가정",
+            "description": "하나은행 환전지갑 최대 90% 환율우대 가정입니다. 실제 적용 조건은 달라질 수 있습니다.",
         },
         "시중은행 USD 80% 우대 가정": {
             "base_spread": 1.50,
             "discount": 80.0,
-            "description": "은행권 달러 환전에서 우대율이 80% 정도라고 보수적으로 가정",
+            "description": "은행권 달러 환전에서 우대율이 80% 정도라고 보수적으로 가정합니다.",
         },
         "증권사 USD 95% 환전우대 가정": {
             "base_spread": 1.00,
             "discount": 95.0,
-            "description": "증권사 해외주식 이벤트에서 자주 보이는 USD 95% 환율우대 가정",
+            "description": "증권사 해외주식 이벤트에서 자주 보이는 USD 95% 환율우대 가정입니다.",
         },
         "증권사 USD 90% 환전우대 가정": {
             "base_spread": 1.00,
             "discount": 90.0,
-            "description": "증권사 환전우대가 90% 수준이라고 가정",
+            "description": "증권사 환전우대가 90% 수준이라고 가정합니다.",
         },
         "우대 없음": {
             "base_spread": 1.00,
             "discount": 0.0,
-            "description": "환율우대를 받지 못하는 보수적 가정",
+            "description": "환율우대를 받지 못하는 보수적 가정입니다.",
         },
     }
 
@@ -95,16 +162,16 @@ def get_fee_preset_info(preset_name):
 
 
 # =========================================================
-# 3. 달러 갭 비율 및 적정 환율 계산
+# 4. 달러 갭 비율 및 적정 환율 계산
 # =========================================================
 
-def calculate_dollar_gap_ratio(current_rate, rate_hist, current_dxy, dxy_hist, period_days=252):
+def calculate_dollar_gap_ratio(current_rate, rate_hist, current_dxy, dxy_hist, period_days=365):
     """
-    달러 갭 비율 및 적정 환율 계산
+    달러리치 방식에 가깝게 달러 갭 비율 및 적정 환율을 계산한다.
 
     핵심 공식:
-    - 기간 중간 환율 = (기간 최저 환율 + 기간 최고 환율) / 2
-    - 기간 중간 DXY = (기간 최저 DXY + 기간 최고 DXY) / 2
+    - 기간 중간 환율 = (기간 내 최저 환율 + 기간 내 최고 환율) / 2
+    - 기간 중간 DXY = (기간 내 최저 DXY + 기간 내 최고 DXY) / 2
     - 현재 달러 갭 비율 = 현재 DXY / 현재 원달러 환율 * 100
     - 기준 달러 갭 비율 = 기간 중간 DXY / 기간 중간 환율 * 100
     - 적정 환율 = 현재 DXY / 기준 달러 갭 비율 * 100
@@ -113,15 +180,14 @@ def calculate_dollar_gap_ratio(current_rate, rate_hist, current_dxy, dxy_hist, p
     if current_rate is None or rate_hist is None or rate_hist.empty:
         return None
 
-    rate_close = rate_hist["Close"].dropna()
+    rate_stats_raw = calculate_mid_price_by_high_low(rate_hist, period_days)
 
-    if len(rate_close) < period_days:
+    if rate_stats_raw is None:
         return None
 
-    recent_rate = rate_close.tail(period_days)
-    rate_min = float(recent_rate.min())
-    rate_max = float(recent_rate.max())
-    rate_mid = (rate_min + rate_max) / 2
+    rate_min = rate_stats_raw["min"]
+    rate_max = rate_stats_raw["max"]
+    rate_mid = rate_stats_raw["mid"]
 
     rate_vs_mid = ((current_rate - rate_mid) / rate_mid) * 100
 
@@ -132,13 +198,12 @@ def calculate_dollar_gap_ratio(current_rate, rate_hist, current_dxy, dxy_hist, p
     appropriate_rate = None
 
     if current_dxy is not None and dxy_hist is not None and not dxy_hist.empty:
-        dxy_close = dxy_hist["Close"].dropna()
+        dxy_stats_raw = calculate_mid_price_by_high_low(dxy_hist, period_days)
 
-        if len(dxy_close) >= period_days:
-            recent_dxy = dxy_close.tail(period_days)
-            dxy_min = float(recent_dxy.min())
-            dxy_max = float(recent_dxy.max())
-            dxy_mid = (dxy_min + dxy_max) / 2
+        if dxy_stats_raw is not None:
+            dxy_min = dxy_stats_raw["min"]
+            dxy_max = dxy_stats_raw["max"]
+            dxy_mid = dxy_stats_raw["mid"]
 
             dxy_vs_mid = ((current_dxy - dxy_mid) / dxy_mid) * 100
 
@@ -173,7 +238,7 @@ def calculate_dollar_gap_ratio(current_rate, rate_hist, current_dxy, dxy_hist, p
 
 
 # =========================================================
-# 4. DXY 추세 분석
+# 5. DXY 추세 분석
 # =========================================================
 
 def analyze_dxy_trend(dxy_hist):
@@ -197,7 +262,7 @@ def analyze_dxy_trend(dxy_hist):
 
 
 # =========================================================
-# 5. 달러 매수 적합성 판단
+# 6. 달러 매수 적합성 판단
 # =========================================================
 
 def get_investment_suitability(gap_data):
@@ -338,7 +403,7 @@ def get_investment_suitability(gap_data):
 
 
 # =========================================================
-# 6. 투자 금액 및 시나리오 계산
+# 7. 투자 금액 및 시나리오 계산
 # =========================================================
 
 def calculate_investment_details(investment_amount, current_rate, fee_rate_percent):
@@ -400,7 +465,7 @@ def build_exchange_rate_scenarios(investment_details, current_rate):
 
 
 # =========================================================
-# 7. Streamlit 앱
+# 8. Streamlit 앱
 # =========================================================
 
 st.set_page_config(
@@ -488,6 +553,10 @@ with st.sidebar:
         st.caption(preset_info["description"])
 
     else:
+        fee_preset_name = "직접 입력"
+        base_spread_percent = None
+        preferential_discount_percent = None
+
         fee_rate_percent = st.number_input(
             "예상 환전 비용률 직접 입력(%)",
             min_value=0.0,
@@ -548,7 +617,8 @@ with st.sidebar:
             예를 들어 기본 스프레드가 1.50%이고 환율우대가 90%라면  
             실제 부담 비용률은 1.50% × 10% = **0.15%**입니다.
 
-            단, 실제 환전가는 은행·증권사별 고시환율, 영업시간, 이벤트 적용 여부, 원화주문 여부에 따라 달라질 수 있습니다.
+            단, 실제 환전가는 은행·증권사별 고시환율, 영업시간, 이벤트 적용 여부,
+            원화주문 여부에 따라 달라질 수 있습니다.
             """
         )
 
@@ -557,17 +627,17 @@ with st.sidebar:
     st.subheader("📊 분석 기간")
 
     period_options = {
-        "1개월": 21,
-        "3개월": 63,
-        "6개월": 126,
-        "1년": 252,
+        "1개월": 30,
+        "3개월": 91,
+        "6개월": 182,
+        "1년": 365,
     }
 
     period_selection = st.selectbox(
         "분석 기간 선택",
         options=list(period_options.keys()),
         index=3,
-        help="중간가와 기준 달러 갭 비율 계산에 사용할 기간을 선택합니다.",
+        help="달러리치 방식에 맞춰 1년은 최근 365일 기준으로 계산합니다.",
     )
 
     period_days = period_options[period_selection]
@@ -587,15 +657,9 @@ with st.sidebar:
             st.session_state["period_days"] = period_days
             st.session_state["period_selection"] = period_selection
             st.session_state["fee_input_mode"] = fee_input_mode
-
-            if fee_input_mode == "가이드에서 선택":
-                st.session_state["fee_preset_name"] = fee_preset_name
-                st.session_state["base_spread_percent"] = base_spread_percent
-                st.session_state["preferential_discount_percent"] = preferential_discount_percent
-            else:
-                st.session_state["fee_preset_name"] = "직접 입력"
-                st.session_state["base_spread_percent"] = None
-                st.session_state["preferential_discount_percent"] = None
+            st.session_state["fee_preset_name"] = fee_preset_name
+            st.session_state["base_spread_percent"] = base_spread_percent
+            st.session_state["preferential_discount_percent"] = preferential_discount_percent
 
     if reset_clicked:
         reset_keys = [
@@ -624,7 +688,7 @@ with st.sidebar:
 if st.session_state.get("analyze", False):
     investment_amount = st.session_state.get("investment_amount", 1_000_000.0)
     fee_rate_percent = st.session_state.get("fee_rate_percent", 0.20)
-    period_days = st.session_state.get("period_days", 252)
+    period_days = st.session_state.get("period_days", 365)
     period_selection = st.session_state.get("period_selection", "1년")
     fee_preset_name = st.session_state.get("fee_preset_name", "직접 입력")
     base_spread_percent = st.session_state.get("base_spread_percent", None)
@@ -656,13 +720,26 @@ if st.session_state.get("analyze", False):
 
     dxy_mid_trend, dxy_short_trend = analyze_dxy_trend(dxy_hist)
 
+    if gap_data:
+        rate_stats = gap_data.get("rate_stats", {})
+        dxy_stats = gap_data.get("dxy_stats", {})
+        current_gap = gap_data.get("current_gap_ratio")
+        mid_gap = gap_data.get("mid_gap_ratio")
+        appropriate_rate = gap_data.get("appropriate_rate")
+    else:
+        rate_stats = {}
+        dxy_stats = {}
+        current_gap = None
+        mid_gap = None
+        appropriate_rate = None
+
     # =====================================================
     # 데이터 기준
     # =====================================================
 
     st.subheader("🕒 데이터 기준")
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric("원/달러 환율 기준일", format_data_date(rate_date))
@@ -673,9 +750,13 @@ if st.session_state.get("analyze", False):
     with col3:
         st.metric("분석 기간", period_selection)
 
+    with col4:
+        st.metric("계산 방식", "달러리치식")
+
     st.info(
         "야후파이낸스 데이터 기준입니다. 실제 은행·증권사 환전가, 환전 스프레드, "
-        "데이터 반영 시간과 차이가 있을 수 있습니다."
+        "데이터 반영 시간과 차이가 있을 수 있습니다. "
+        "달러리치 앱과 데이터 출처가 다르면 1~몇 원 정도 차이가 날 수 있습니다."
     )
 
     st.markdown("---")
@@ -717,7 +798,7 @@ if st.session_state.get("analyze", False):
     # 현재 시장 상황
     # =====================================================
 
-    st.subheader("📈 현재 시장 상황")
+    st.subheader("📈 달러지수 대비 적정환율")
 
     top1, top2, top3 = st.columns(3)
 
@@ -725,16 +806,20 @@ if st.session_state.get("analyze", False):
         st.metric("현재 달러지수(DXY)", f"{current_dxy:.2f}" if current_dxy is not None else "N/A")
 
     with top2:
-        if gap_data and gap_data.get("mid_gap_ratio") is not None:
-            st.metric(f"{period_selection} 기준 달러 갭", f"{gap_data['mid_gap_ratio']:.2f}")
+        if mid_gap is not None:
+            st.metric(f"{period_selection} 달러 갭", f"{mid_gap:.2f}")
         else:
-            st.metric(f"{period_selection} 기준 달러 갭", "N/A")
+            st.metric(f"{period_selection} 달러 갭", "N/A")
 
     with top3:
-        if gap_data and gap_data.get("appropriate_rate") is not None:
-            st.metric("적정 환율", f"₩{gap_data['appropriate_rate']:,.2f}")
+        if appropriate_rate is not None:
+            st.metric("적정 환율", f"₩{appropriate_rate:,.2f}")
         else:
             st.metric("적정 환율", "N/A")
+
+    st.caption(
+        "적정 환율 = 현재 달러지수 ÷ 기간 달러 갭 × 100"
+    )
 
     st.markdown("---")
 
@@ -745,13 +830,6 @@ if st.session_state.get("analyze", False):
     st.subheader("📊 상세 지표")
 
     col1, col2, col3, col4 = st.columns(4)
-
-    if gap_data:
-        rate_stats = gap_data.get("rate_stats", {})
-        dxy_stats = gap_data.get("dxy_stats", {})
-    else:
-        rate_stats = {}
-        dxy_stats = {}
 
     with col1:
         rate_vs_mid = gap_data.get("rate_vs_mid") if gap_data else None
@@ -776,9 +854,6 @@ if st.session_state.get("analyze", False):
         )
 
     with col3:
-        current_gap = gap_data.get("current_gap_ratio") if gap_data else None
-        mid_gap = gap_data.get("mid_gap_ratio") if gap_data else None
-
         if current_gap is not None and mid_gap is not None and mid_gap != 0:
             gap_delta_pct = ((current_gap - mid_gap) / mid_gap) * 100
         else:
@@ -793,8 +868,6 @@ if st.session_state.get("analyze", False):
         )
 
     with col4:
-        appropriate_rate = gap_data.get("appropriate_rate") if gap_data else None
-
         if appropriate_rate is not None:
             rate_diff_pct = ((current_rate - appropriate_rate) / appropriate_rate) * 100
         else:
@@ -896,7 +969,7 @@ if st.session_state.get("analyze", False):
         )
 
         c2.metric(
-            "기준 달러 갭 비율",
+            f"{period_selection} 기준 달러 갭",
             f"{mid_gap:.2f}" if mid_gap is not None else "N/A",
         )
 
@@ -972,56 +1045,93 @@ if st.session_state.get("analyze", False):
     st.subheader("📉 원/달러 환율 차트")
 
     if rate_hist is not None and not rate_hist.empty:
-        chart_data = rate_hist.tail(period_days).copy()
-        chart_data = chart_data.reset_index()
+        chart_data = get_recent_window_by_calendar_days(rate_hist, period_days)
 
-        date_col = chart_data.columns[0]
-        chart_data[date_col] = pd.to_datetime(chart_data[date_col])
-        chart_data["MA20"] = chart_data["Close"].rolling(window=20).mean()
+        if chart_data is not None and not chart_data.empty:
+            chart_data = chart_data.copy()
+            chart_data = chart_data.reset_index()
 
-        fig = go.Figure()
+            date_col = chart_data.columns[0]
+            chart_data[date_col] = pd.to_datetime(chart_data[date_col])
+            chart_data["MA20"] = chart_data["Close"].rolling(window=20).mean()
 
-        fig.add_trace(go.Scatter(
-            x=chart_data[date_col],
-            y=chart_data["Close"],
-            mode="lines",
-            name="원/달러 환율",
-            line=dict(width=2),
-        ))
+            fig = go.Figure()
 
-        fig.add_trace(go.Scatter(
-            x=chart_data[date_col],
-            y=chart_data["MA20"],
-            mode="lines",
-            name="20일 이동평균",
-            line=dict(width=1, dash="dash"),
-        ))
+            fig.add_trace(go.Scatter(
+                x=chart_data[date_col],
+                y=chart_data["Close"],
+                mode="lines",
+                name="원/달러 환율",
+                line=dict(width=2),
+            ))
 
-        if gap_data and gap_data.get("rate_stats"):
-            fig.add_hline(
-                y=gap_data["rate_stats"]["mid"],
-                line_dash="dot",
-                annotation_text=f"{period_selection} 중간가",
-                annotation_position="bottom right",
+            fig.add_trace(go.Scatter(
+                x=chart_data[date_col],
+                y=chart_data["MA20"],
+                mode="lines",
+                name="20일 이동평균",
+                line=dict(width=1, dash="dash"),
+            ))
+
+            if rate_stats:
+                fig.add_hline(
+                    y=rate_stats["mid"],
+                    line_dash="dot",
+                    annotation_text=f"{period_selection} 중간가",
+                    annotation_position="bottom right",
+                )
+
+            if appropriate_rate is not None:
+                fig.add_hline(
+                    y=appropriate_rate,
+                    line_dash="dash",
+                    annotation_text="적정 환율",
+                    annotation_position="top right",
+                )
+
+            fig.update_layout(
+                title="원/달러 환율 추이",
+                xaxis_title="날짜",
+                yaxis_title="환율(원)",
+                hovermode="x unified",
+                height=420,
             )
 
-        if appropriate_rate is not None:
-            fig.add_hline(
-                y=appropriate_rate,
-                line_dash="dash",
-                annotation_text="적정 환율",
-                annotation_position="top right",
-            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        fig.update_layout(
-            title="원/달러 환율 추이",
-            xaxis_title="날짜",
-            yaxis_title="환율(원)",
-            hovermode="x unified",
-            height=420,
+    st.markdown("---")
+
+    # =====================================================
+    # 계산 방식 설명
+    # =====================================================
+
+    with st.expander("달러리치식 계산 방식 보기"):
+        st.markdown(
+            f"""
+            **1. 기간 기준**
+
+            - 현재 선택 기간: **{period_selection}**
+            - 1년 선택 시 최근 **365일** 기준으로 계산합니다.
+            - 기존 252거래일 기준이 아니라 달력일 기준으로 계산합니다.
+
+            **2. 중간값 계산**
+
+            - 원/달러 환율 중간값 = 기간 내 최저 환율과 최고 환율의 중간값
+            - DXY 중간값 = 기간 내 최저 DXY와 최고 DXY의 중간값
+
+            **3. 달러 갭 비율**
+
+            - 현재 달러 갭 비율 = 현재 DXY ÷ 현재 원/달러 환율 × 100
+            - 기준 달러 갭 비율 = 기간 중간 DXY ÷ 기간 중간 원/달러 환율 × 100
+
+            **4. 적정 환율**
+
+            - 적정 환율 = 현재 DXY ÷ 기준 달러 갭 비율 × 100
+
+            ※ 이 값은 경제학적 의미의 절대적인 적정환율이 아니라,  
+            달러지수와 원/달러 환율의 상대 위치를 바탕으로 계산한 참고 지표입니다.
+            """
         )
-
-        st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("---")
 
@@ -1034,11 +1144,18 @@ if st.session_state.get("analyze", False):
     summary_rows = [
         {"항목": "분석일", "값": datetime.now().strftime("%Y-%m-%d %H:%M:%S")},
         {"항목": "분석 기간", "값": period_selection},
+        {"항목": "계산 방식", "값": "달러리치식: 최근 달력일 High/Low 중간값 기준"},
         {"항목": "환율 기준일", "값": format_data_date(rate_date)},
         {"항목": "DXY 기준일", "값": format_data_date(dxy_date)},
         {"항목": "선택한 환전 비용 가이드", "값": fee_preset_name},
-        {"항목": "우대 전 기본 스프레드", "값": f"{base_spread_percent:.2f}%" if base_spread_percent is not None else "직접 입력"},
-        {"항목": "환율우대율", "값": f"{preferential_discount_percent:.1f}%" if preferential_discount_percent is not None else "직접 입력"},
+        {
+            "항목": "우대 전 기본 스프레드",
+            "값": f"{base_spread_percent:.2f}%" if base_spread_percent is not None else "직접 입력",
+        },
+        {
+            "항목": "환율우대율",
+            "값": f"{preferential_discount_percent:.1f}%" if preferential_discount_percent is not None else "직접 입력",
+        },
         {"항목": "예상 환전 비용률", "값": f"{fee_rate_percent:.3f}%"},
         {"항목": "현재 원/달러 환율", "값": f"{current_rate:,.2f}"},
         {"항목": "현재 DXY", "값": f"{current_dxy:.2f}" if current_dxy is not None else "N/A"},
@@ -1048,7 +1165,10 @@ if st.session_state.get("analyze", False):
         {"항목": "달러 매수 적합성", "값": decision},
         {"항목": "충족 조건 수", "값": f"{suitability['conditions_met']} / {suitability['total_conditions']}"},
         {"항목": "투자 원금", "값": f"{investment_amount:,.0f}"},
-        {"항목": "수수료 후 매수 가능 달러", "값": f"{investment_details['net_dollar']:,.2f}" if investment_details else "N/A"},
+        {
+            "항목": "수수료 후 매수 가능 달러",
+            "값": f"{investment_details['net_dollar']:,.2f}" if investment_details else "N/A",
+        },
     ]
 
     summary_df = pd.DataFrame(summary_rows)
@@ -1076,6 +1196,24 @@ else:
         4. 현재 원/달러 환율이 적정 환율보다 낮은가?
 
         ※ 기간 중간가는 일별 평균값이 아니라, 해당 기간의 최고값과 최저값의 중간 지점입니다.
+        """
+    )
+
+    st.markdown("### 🧮 달러리치식 계산 기준")
+
+    st.markdown(
+        """
+        이 버전은 달러리치 앱과 비슷한 결과가 나오도록 다음 기준을 사용합니다.
+
+        - 1년 = 최근 365일
+        - 6개월 = 최근 182일
+        - 3개월 = 최근 91일
+        - 1개월 = 최근 30일
+        - 기간 내 High / Low 기준으로 최고값과 최저값을 찾음
+        - 기간 중간값 = 최고값과 최저값의 중간 지점
+        - 적정 환율 = 현재 DXY ÷ 기준 달러 갭 비율 × 100
+
+        단, 데이터 출처가 달러리치 앱과 완전히 같지 않으면 결과가 조금 다를 수 있습니다.
         """
     )
 
